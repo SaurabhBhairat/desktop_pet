@@ -1,0 +1,17 @@
+# big things that can be downloaded again
+voice_env/
+dragon_env/
+.venv/
+/models/
+assets/whisper_model/
+__pycache__/
+*.pyc
+_to_delete/
+
+# your 3D dragon files (add your own .glb here)
+assets/models/
+
+# personal data
+shared/settings.json
+storage/memory.json
+voice/dragon_prefs.json

@@ -1,0 +1,16 @@
+BABY DRAGON - DEVELOPMENT CHECKPOINT
+
+Completed:
+- Control Center settings
+- Privacy Lock
+- Approved-folder file access
+- Local memory module
+- Microphone recording
+- Offline Whisper speech recognition
+- Local Qwen AI using Ollama
+- Offline text-to-speech
+- Complete voice-to-AI-to-voice test
+
+Status:
+Voice prototype successfully tested.
+3D desktop companion still under development.                   
