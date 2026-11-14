@@ -43,6 +43,11 @@ try:
 except ImportError:
     import dragon_settings                       # when this file is run directly
 
+try:
+    from voice import dragon_bubble              # when started from run_dragon.py
+except ImportError:
+    import dragon_bubble                         # when this file is run directly
+
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMainWindow, QSystemTrayIcon
@@ -80,22 +85,28 @@ HTML = """<!doctype html>
 <style>
   html, body { margin:0; background:transparent; overflow:hidden; }
   canvas { display:block; filter: drop-shadow(0 0 6px rgba(200,140,255,0.85)) drop-shadow(0 0 14px rgba(150,80,255,0.55)); }
+  #warn { display:none; position:fixed; left:6px; right:6px; top:38%; padding:6px; font:11px sans-serif; color:#fff;
+          background:rgba(60,20,90,0.92); border-radius:8px; text-align:center; }
   #fx { position:fixed; top:5%; right:12%; font-size:26px; pointer-events:none;
         animation: fxbob 2s ease-in-out infinite; }
   @keyframes fxbob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 </style>
 <script type="importmap">
 { "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three": "__THREE_URL__",
+    "three/addons/": "__ADDONS_URL__"
 } }
 </script>
 </head>
 <body>
 <div id="fx"></div>
+<div id="warn"></div>
+<script>setTimeout(function () { if (!window.__dragonReady) { var w = document.getElementById("warn");
+  w.textContent = "3D engine missing. Run get_three.py once (needs internet)."; w.style.display = "block"; } }, 8000);</script>
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+window.__dragonReady = true;      // lets the page warn you if the 3D engine could not be loaded
 
 const MODEL_URL = "__MODEL_URL__";
 
@@ -582,7 +593,9 @@ class HotkeyListener(QObject):
 class DragonWindow(QMainWindow):
     # Emit from any thread: win.state_requested.emit("talking")
     state_requested = Signal(str)
-    talk_requested = Signal()          # emitted when you double-click the dragon
+    talk_requested = Signal()          # emitted when you double-click the dragon (voice question)
+    say_requested = Signal(str)        # an answer to show in the speech bubble (any thread)
+    text_submitted = Signal(str)       # a question typed into the text box
 
     def __init__(self, glb_path):
         super().__init__()
@@ -608,7 +621,19 @@ class DragonWindow(QMainWindow):
         self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
         self.setCentralWidget(self.view)
 
-        html = HTML.replace("__MODEL_URL__", model_url)
+        # Use the local copy of three.js when get_three.py has been run (works offline), else the internet copy.
+        vendor = os.path.join(folder, "vendor")
+        if (os.path.isfile(os.path.join(vendor, "three.module.js"))
+                and os.path.isfile(os.path.join(vendor, "addons", "loaders", "GLTFLoader.js"))
+                and os.path.isfile(os.path.join(vendor, "addons", "utils", "BufferGeometryUtils.js"))):
+            three_url, addons_url = "/vendor/three.module.js", "/vendor/addons/"
+            print("3D engine: using the local copy (works offline).")
+        else:
+            three_url = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            addons_url = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            print("3D engine: using the internet copy. For offline use, run get_three.py once.")
+        html = (HTML.replace("__THREE_URL__", three_url).replace("__ADDONS_URL__", addons_url)
+                .replace("__MODEL_URL__", model_url))
         self.view.setHtml(html, QUrl("http://127.0.0.1:%d/" % port))
 
         self.state_requested.connect(self.set_state)
@@ -640,6 +665,9 @@ class DragonWindow(QMainWindow):
         self._cursor_timer.timeout.connect(self._cursor_tick)
         self._cursor_timer.start(100)
         self.talk_requested.connect(self._on_talk)
+        self._bubble = None
+        self._typebox = None
+        self.say_requested.connect(self.show_bubble)
 
         # Tray icon: hide the dragon and bring it back without any terminal.
         QApplication.instance().setQuitOnLastWindowClosed(False)   # hiding must not end the program
@@ -695,6 +723,7 @@ class DragonWindow(QMainWindow):
         menu.addAction("Show dragon", lambda: self.show_dragon())
         menu.addAction("Hide dragon", lambda: self.hide_dragon())
         menu.addAction("Talk to dragon", lambda: self.talk_requested.emit())
+        menu.addAction("Type to dragon...", lambda: self.open_typebox())
         menu.addAction("Settings...", lambda: self.open_settings())
         menu.addSeparator()
         menu.addAction("Quit", lambda: self._quit())
@@ -720,6 +749,7 @@ class DragonWindow(QMainWindow):
     def hide_dragon(self, force=False):
         if self._tray is None and not force:         # no tray: only hide if a hotkey can bring it back
             return
+        self._close_popups()
         self.hide()
         self._set_sleeping_app(True)
         if AUTO_QUIT_MINUTES > 0:
@@ -745,6 +775,7 @@ class DragonWindow(QMainWindow):
         self._js("window.setPaused && window.setPaused(%s)" % ("true" if hidden else "false"))
 
     def _quit(self):
+        self._close_popups()
         self._hotkeys.stop()
         if self._tray is not None:
             self._tray.hide()
@@ -793,6 +824,41 @@ class DragonWindow(QMainWindow):
     def _brain_tick(self):
         if self._js_ready and self.isVisible():
             self._apply_events(self._brain.tick(1.0, busy=(self._state != "idle")))
+
+    def show_bubble(self, text):
+        """Shows an answer as text next to the dragon (if the settings say so)."""
+        if not text or not self.isVisible():
+            return
+        if not dragon_settings.answer_bubble(self._prefs):
+            return
+        if self._bubble is None:
+            self._bubble = dragon_bubble.BubbleWindow(lambda: self.frameGeometry())
+        self._bubble.show_text(text)
+
+    def open_typebox(self):
+        if not self.isVisible():
+            self.show_dragon()
+        if self._typebox is None:
+            self._typebox = dragon_bubble.TypeBox(lambda: self.frameGeometry(), self._on_typed)
+        self._typebox.open()
+
+    def _on_typed(self, text):
+        text = text.strip()
+        if text:
+            self._interact("talk")
+            self.text_submitted.emit(text)
+
+    def _ask(self):
+        """Double-click: Type mode opens the text box, otherwise the dragon listens."""
+        if self._prefs.get("mode") == "type":
+            self.open_typebox()
+        else:
+            self.talk_requested.emit()
+
+    def _close_popups(self):
+        for w in (self._bubble, self._typebox):
+            if w is not None:
+                w.hide()
 
     def open_settings(self):
         if self._settings_dlg is None:
@@ -908,7 +974,7 @@ class DragonWindow(QMainWindow):
             return True
         if t == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
             self._drag_offset = None
-            self.talk_requested.emit()
+            self._ask()
             return True
         if t == QEvent.MouseButtonRelease:
             if self._drag_offset is not None and self._activity != "fly":
@@ -935,6 +1001,8 @@ class DragonWindow(QMainWindow):
         for label, w, h in [("Tiny", 120, 140), ("Small", 170, 200),
                             ("Medium", 260, 305), ("Large", 360, 420)]:
             sizes.addAction(label, lambda w=w, h=h: self.resize(w, h))
+        menu.addAction("Talk to dragon (voice)", lambda: self.talk_requested.emit())
+        menu.addAction("Type to dragon...", lambda: self.open_typebox())
         menu.addAction("Settings...", lambda: self.open_settings())
         wander = menu.addAction("Wander around")
         wander.setCheckable(True)

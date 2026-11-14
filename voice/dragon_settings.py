@@ -25,8 +25,10 @@ DEFAULTS = {
     "quiet_from": 22,
     "quiet_to": 8,
     "speak_first": "sometimes",
+    "answer": "both",
 }
 MODES = ("talk", "type", "both")
+ANSWERS = ("bubble", "voice", "both")
 FREQUENCIES = ("never", "rarely", "sometimes", "often")
 # minutes the dragon waits between messages it starts itself
 SPEAK_GAP_MINUTES = {"never": None, "rarely": 90, "sometimes": 40, "often": 15}
@@ -42,6 +44,8 @@ def load_prefs(path=PREFS_PATH):
         pass
     if prefs["mode"] not in MODES:
         prefs["mode"] = DEFAULTS["mode"]
+    if prefs["answer"] not in ANSWERS:
+        prefs["answer"] = DEFAULTS["answer"]
     if prefs["speak_first"] not in FREQUENCIES:
         prefs["speak_first"] = DEFAULTS["speak_first"]
     for k in ("quiet_from", "quiet_to"):
@@ -79,6 +83,16 @@ def may_speak_first(prefs, hour=None):
     return SPEAK_GAP_MINUTES[prefs["speak_first"]] is not None and not in_quiet_hours(prefs, hour)
 
 
+def answer_bubble(prefs):
+    """True when answers should be shown as text in a bubble."""
+    return prefs.get("answer", "both") in ("bubble", "both")
+
+
+def answer_voice(prefs):
+    """True when answers should be spoken."""
+    return prefs.get("answer", "both") in ("voice", "both")
+
+
 # ---------------------------------------------------------------- the panel
 def make_dialog(prefs, on_change, parent=None):
     """Builds the settings window. on_change(new_prefs) is called after every change."""
@@ -105,7 +119,7 @@ def make_dialog(prefs, on_change, parent=None):
     root = QVBoxLayout(dlg)
 
     # --- talk / type / both
-    box = QGroupBox("How do we talk?")
+    box = QGroupBox("How do I ask it?  (double-click: Talk = listens, Type = opens a text box)")
     row = QHBoxLayout(box)
     radios = {}
     for key, label in (("talk", "Talk (voice)"), ("type", "Type (text)"), ("both", "Both")):
@@ -113,6 +127,16 @@ def make_dialog(prefs, on_change, parent=None):
         rb.setChecked(state["mode"] == key)
         rb.toggled.connect(lambda on, k=key: on and (state.__setitem__("mode", k), changed()))
         radios[key] = rb
+        row.addWidget(rb)
+    root.addWidget(box)
+
+    # --- how it answers
+    box = QGroupBox("How does it answer?")
+    row = QHBoxLayout(box)
+    for key, label in (("bubble", "Chat bubble (text)"), ("voice", "Voice"), ("both", "Both")):
+        rb = QRadioButton(label)
+        rb.setChecked(state["answer"] == key)
+        rb.toggled.connect(lambda on, k=key: on and (state.__setitem__("answer", k), changed()))
         row.addWidget(rb)
     root.addWidget(box)
 

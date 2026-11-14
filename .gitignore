@@ -15,3 +15,16 @@ assets/models/
 shared/settings.json
 storage/memory.json
 voice/dragon_prefs.json
+
+voice/dragon_memory.json
+*_before_*.py
+patch_run.py
+
+speedup_patch.py
+
+offline_patch.py
+
+warmup_patch.py
+
+Untitled-*.py
+add_answers_patch.py

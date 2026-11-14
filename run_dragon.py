@@ -7,6 +7,7 @@ Talk to the dragon: double-click it, or press ENTER in this terminal.
 Only one dragon runs at a time: starting it again (for example with the Windows
 shortcut key) just brings the running dragon back to the screen.
 """
+import queue
 import sys
 import threading
 import traceback
@@ -45,7 +46,7 @@ def init_com():
             pass
 
 
-def voice_worker(win, talk_event):
+def voice_worker(win, jobs):
     from voice.assistant_voice import BabyDragonVoice      # heavy imports happen here, in the background
     init_com()
     emit = win.state_requested.emit
@@ -57,24 +58,36 @@ def voice_worker(win, talk_event):
         return
 
     print("Dragon is ready. Double-click it, or press ENTER here, to talk.")
+    from voice import dragon_settings
+    say = win.say_requested.emit
+
+    def voice_on():                              # read live, so the settings panel applies at once
+        return dragon_settings.answer_voice(win._prefs)
+
+    def bubble_on():
+        return dragon_settings.answer_bubble(win._prefs)
+
     while True:
-        talk_event.wait()
-        talk_event.clear()
+        kind, text = jobs.get()                  # ("voice", None) or ("text", "the question")
         try:
-            dragon.listen_and_reply(on_state=emit)
+            if kind == "text":
+                dragon.reply_to_text(text, on_state=emit, on_text=say, voice_on=voice_on, bubble_on=bubble_on)
+            else:
+                dragon.listen_and_reply(on_state=emit, on_text=say, voice_on=voice_on, bubble_on=bubble_on)
         except Exception:
             traceback.print_exc()
         finally:
             emit("idle")
 
 
-def enter_listener(talk_event):
+def enter_listener(jobs):
     while True:
         try:
             input()
         except EOFError:
             return
-        talk_event.set()
+        if jobs.empty():
+            jobs.put(("voice", None))
 
 
 def main():
@@ -97,11 +110,21 @@ def main():
 
     server.newConnection.connect(on_connection)
 
-    talk_event = threading.Event()
-    win.talk_requested.connect(talk_event.set)
+    jobs = queue.Queue()                         # questions waiting for the assistant
 
-    threading.Thread(target=voice_worker, args=(win, talk_event), daemon=True).start()
-    threading.Thread(target=enter_listener, args=(talk_event,), daemon=True).start()
+    def ask_by_voice():
+        if jobs.empty():
+            jobs.put(("voice", None))
+
+    def ask_by_text(text):
+        if jobs.empty():
+            jobs.put(("text", text))
+
+    win.talk_requested.connect(ask_by_voice)
+    win.text_submitted.connect(ask_by_text)
+
+    threading.Thread(target=voice_worker, args=(win, jobs), daemon=True).start()
+    threading.Thread(target=enter_listener, args=(jobs,), daemon=True).start()
 
     sys.exit(app.exec())
 
